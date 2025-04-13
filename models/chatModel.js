@@ -15,9 +15,9 @@ const chatSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
-  createdAt: {
+  timestamp: {
     type: Date,
-    default: Date.now,
+    default: Date.now, // Automatically set the current time when the message is created
   },
 });
 

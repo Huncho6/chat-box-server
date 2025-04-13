@@ -3,6 +3,8 @@ require("dotenv").config();
 const db = require("./config/db");
 const userRoutes = require("./routes/userRoutes");
 const chatRoutes = require("./routes/chatRoutes");
+const cron = require("node-cron");
+const cleanupMessages = require("./utils/cleanupMessages");
 
 // Import required modules
 const express = require("express");
@@ -75,21 +77,22 @@ io.on("connection", (socket) => {
     connectedUsers.delete(socket.user.username); // Remove user from the map
   });
 
-  // Handle private messages
-  socket.on("private message", ({ recipient, content }) => {
-    console.log(`Message from ${socket.user.username} to ${recipient}: ${content}`);
+// Handle private messages
+socket.on("private message", async ({ recipient, content }) => {
+  console.log(`Message from ${socket.user.username} to ${recipient}: ${content}`);
 
-    const recipientSocketId = connectedUsers.get(recipient); // Get recipient's socket ID
-    if (recipientSocketId) {
-      // Emit the message to the recipient
-      io.to(recipientSocketId).emit("private message", {
-        sender: socket.user.username,
-        content,
-      });
-    } else {
-      console.log(`Recipient ${recipient} is not connected.`);
-    }
-  });
+  const recipientSocketId = connectedUsers.get(recipient); // Get recipient's socket ID
+  if (recipientSocketId) {
+    // Emit the message to the recipient
+    io.to(recipientSocketId).emit("private message", {
+      sender: socket.user.username,
+      content,
+      timestamp: new Date(),
+    });
+  } else {
+    console.log(`Recipient ${recipient} is not connected.`);
+  }
+});
 
   // Handle broadcast messages (optional, for group chats)
   socket.on("chat message", (msg) => {
@@ -100,6 +103,12 @@ io.on("connection", (socket) => {
     console.log("Broadcasting message:", messageWithUser); // Debugging
     io.emit("chat message", messageWithUser); // Broadcast the message to all connected clients
   });
+});
+
+// Schedule the cleanup job to run every hour
+cron.schedule("0 * * * *", () => {
+  console.log("Running cleanup job...");
+  cleanupMessages();
 });
 
 // Routes
