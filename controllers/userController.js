@@ -18,51 +18,162 @@ const transporter = nodemailer.createTransport({
 
 exports.createAccount = async (req, res) => {
   const { username, email, password } = req.body;
-  const hashedPassword = await bcrypt.hash(password, 10);
 
-  const newUser = new User({
-    username,
-    email,
-    password: hashedPassword,
-  });
+  try {
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ message: "Invalid email format" });
+    }
 
-  await newUser.save();
+    // Check for generic or disposable email addresses
+    const invalidEmails = [
+      "test@example.com",
+      "admin@example.com",
+      "noreply@example.com",
+    ];
+    const disposableDomains = ["mailinator.com", "tempmail.com", "example.com"];
+    const emailDomain = email.split("@")[1];
 
-  const mailOptions = {
-    from: process.env.SMTP_USER,
-    to: email,
-    subject: "Huncho's chat App",
-    html: `
-      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-        <h2 style="color: #4CAF50;">Congratulations ${username}!</h2>
-        <p>Your account has been created successfully.</p>
-        <p>Thank you,<br>The Team</p>
-      </div>
-    `,
-  };
+    if (
+      invalidEmails.includes(email.toLowerCase()) ||
+      disposableDomains.includes(emailDomain.toLowerCase())
+    ) {
+      return res.status(400).json({ message: "Email is not allowed" });
+    }
 
-  transporter.sendMail(mailOptions);
-  res.status(201).json({ message: "Account created successfully." });
+    // Check if the email or username already exists
+    const existingUser = await User.findOne({ $or: [{ email }, { username }] });
+    if (existingUser) {
+      return res
+        .status(400)
+        .json({ message: "Email or username already exists" });
+    }
+
+    // Hash the password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create a new user
+    const newUser = new User({
+      username,
+      email,
+      password: hashedPassword,
+    });
+
+    await newUser.save();
+
+    // Send a welcome email
+    const mailOptions = {
+      from: process.env.SMTP_USER,
+      to: email,
+      subject: "Huncho's Chat App",
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+          <h2 style="color: #4CAF50;">Congratulations ${username}!</h2>
+          <p>Your account has been created successfully.</p>
+          <p>Thank you,<br>The Team</p>
+        </div>
+      `,
+    };
+
+    transporter.sendMail(mailOptions);
+    res.status(201).json({ message: "Account created successfully." });
+  } catch (error) {
+    res.status(500).json({ message: "Error creating account", error });
+  }
 };
 
 exports.login = async (req, res) => {
   const { username, email, password } = req.body;
-  const user = await User.findOne({ $or: [{ username }, { email }] });
-  const isCorrectPassword = await bcrypt.compare(password, user.password);
 
-  const token = jwt.sign(
-    { id: user._id, role: "user" },
-    process.env.SECRET_KEY,
-    { expiresIn: "1h" }
-  );
+  try {
+    console.log("Login request received:", { username, email }); // Debugging
 
-  res.status(200).json({
-    data: {
-      token,
-      userInfo: { _id: user._id, username: user.username, email: user.email },
-    },
-    message: "User logged in successfully",
-  });
+    // Find the user by username or email
+    const user = await User.findOne({ $or: [{ username }, { email }] });
+    if (!user) {
+      console.error("User not found"); // Debugging
+      return res.status(401).json({ message: "Invalid username or email" });
+    }
+
+    console.log("User found:", user); // Debugging
+
+    // Check if the password is correct
+    const isCorrectPassword = await bcrypt.compare(password, user.password);
+    if (!isCorrectPassword) {
+      console.error("Invalid password"); // Debugging
+      return res.status(401).json({ message: "Invalid password" });
+    }
+
+    console.log("Password is correct"); // Debugging
+
+    // Generate an access token (short-lived)
+    const token = jwt.sign(
+      { id: user._id, role: "user" },
+      process.env.SECRET_KEY,
+      { expiresIn: "1h" } // Access token expires in 1 hour
+    );
+
+    console.log("Access token generated:", token); // Debugging
+
+    // Generate a refresh token (long-lived)
+    const refreshToken = jwt.sign(
+      { id: user._id, role: "user" },
+      process.env.REFRESH_SECRET_KEY, // Use a different secret key for refresh tokens
+      { expiresIn: "30d" } // Refresh token expires in 30 days
+    );
+
+    console.log("Refresh token generated:", refreshToken); // Debugging
+
+    // Save the refresh token in the database
+    user.refreshToken = refreshToken;
+    await user.save();
+
+    console.log("Tokens saved to database"); // Debugging
+
+    // Send the response with both tokens
+    res.status(200).json({
+      data: {
+        token, // Access token
+        refreshToken, // Refresh token
+        userInfo: { _id: user._id, username: user.username, email: user.email },
+      },
+      message: "User logged in successfully",
+    });
+  } catch (error) {
+    console.error("Error logging in:", error); // Debugging
+    res.status(500).json({ message: "Error logging in", error });
+  }
+};
+
+exports.refreshToken = async (req, res) => {
+  const { refreshToken } = req.body;
+
+  if (!refreshToken) {
+    return res.status(401).json({ message: "Refresh token is required" });
+  }
+
+  try {
+    const decoded = jwt.verify(refreshToken, process.env.REFRESH_SECRET_KEY);
+
+    const user = await User.findById(decoded.id);
+    if (!user || user.refreshToken !== refreshToken) {
+      return res.status(403).json({ message: "Invalid refresh token" });
+    }
+
+    // Generate a new access token
+    const newAccessToken = jwt.sign(
+      { id: user._id, role: "user" },
+      process.env.SECRET_KEY,
+      { expiresIn: "1h" } // Access token expires in 1 hour
+    );
+
+    res.status(200).json({ accessToken: newAccessToken });
+  } catch (error) {
+    res
+      .status(403)
+      .json({ message: "Invalid or expired refresh token", error });
+  }
 };
 
 exports.userForgotPassword = async ({ body: { email } }, res) => {
@@ -127,21 +238,18 @@ exports.userResetPassword = async (req, res) => {
   }
 };
 
-
-exports.getUsers = async (req,res) => {
+exports.getUsers = async (req, res) => {
   try {
-      const users = await   User.find();
-      res.status(201).send({
-          status: "success",
-          count: users.length,
-          data: users,
-      })
+    // Fetch only the username and email fields for all users
+    const users = await User.find({}, "username email");
 
-  }catch (error) {
-      res.status(400).json({message: error.message});
+    res.status(200).json(users); // Return the users array directly
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: "Error fetching users", error: error.message });
   }
 };
-
 
 exports.getUserById = async (req, res) => {
   try {

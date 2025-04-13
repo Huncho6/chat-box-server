@@ -27,6 +27,9 @@ const userSchema = new mongoose.Schema({
   expireToken: {
     type: Date,
   },
+  refreshToken: {
+    type: String, // Add this field to store the refresh token
+  },
 });
 
 const User = mongoose.model("User", userSchema);

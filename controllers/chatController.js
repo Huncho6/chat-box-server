@@ -1,32 +1,71 @@
 const Chat = require("../models/chatModel");
+const User = require("../models/userModel");
 
-exports.getMessages = async (req, res) => {
+// Send a private message
+exports.sendPrivateMessage = async (req, res) => {
+  const { recipient, content } = req.body;
+
   try {
-    const messages = await Chat.find(); // Fetch messages from the database
-    res.json({ messages });
-  } catch (error) {
-    console.error("Error fetching messages:", error);
-    res.status(500).json({ message: "Error fetching messages", error });
-  }
-};
+    // Find the recipient by username or email
+    const recipientUser = await User.findOne({
+      $or: [{ username: recipient }, { email: recipient }],
+    });
 
-exports.sendMessage = async (req, res) => {
-  try {
-    const { sender, content } = req.body;
-
-    // Validate the request body
-    if (!sender || !content) {
-      return res.status(400).json({ message: "Sender and content are required" });
+    if (!recipientUser) {
+      return res.status(404).json({ message: "Recipient not found" });
     }
 
     // Save the message to the database
-    const newMessage = new Chat({ sender, content });
+    const newMessage = new Chat({
+      sender: req.user._id,
+      recipient: recipientUser._id,
+      content,
+    });
+
     await newMessage.save();
+
+    // Emit the message to the recipient via Socket.IO
+    const recipientSocket = Array.from(io.sockets.sockets.values()).find(
+      (s) => s.user && s.user.username === recipient
+    );
+
+    if (recipientSocket) {
+      recipientSocket.emit("private message", {
+        sender: req.user.username,
+        content,
+      });
+    }
 
     res.status(201).json({ message: "Message sent successfully" });
   } catch (error) {
-    console.error("Error in sendMessage:", error);
-    res.status(500).json({ message: "Internal Server Error", error });
-    console.log("Request Body:", req.body);
+    res.status(500).json({ message: "Error sending message", error });
+  }
+};
+
+// Get private messages between two users
+exports.getPrivateMessages = async (req, res) => {
+  const { recipient } = req.params;
+
+  try {
+    // Find the recipient by username or email
+    const recipientUser = await User.findOne({
+      $or: [{ username: recipient }, { email: recipient }],
+    });
+
+    if (!recipientUser) {
+      return res.status(404).json({ message: "Recipient not found" });
+    }
+
+    // Fetch messages between the authenticated user and the recipient
+    const messages = await Chat.find({
+      $or: [
+        { sender: req.user._id, recipient: recipientUser._id },
+        { sender: recipientUser._id, recipient: req.user._id },
+      ],
+    }).sort({ createdAt: 1 }); // Sort messages by creation time
+
+    res.status(200).json({ messages });
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching messages", error });
   }
 };
